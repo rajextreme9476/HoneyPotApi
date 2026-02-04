@@ -3,8 +3,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import json
 import re
-import google.generativeai as genai
-
+from google import genai
 
 # ======================================================
 # CONFIG ENW
