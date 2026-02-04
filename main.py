@@ -3,16 +3,16 @@ from pydantic import BaseModel
 from typing import List, Optional
 import json
 import re
-# from google import genai
+from google import genai
 
 # ======================================================
 # CONFIG ENW
 # ======================================================
-API_KEY = "12345678"
+API_KEY = "123456789"
 GEMINI_API_KEY = "AIzaSyBAtsADQoe3y442Z3ShOYkVwIRqbBElLks"
 MODEL_NAME = "gemini-2.5-flash"
 
-# client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 app = FastAPI(
     title="Agentic Honeypot – Scam Detection & Intelligence",
@@ -215,78 +215,78 @@ def calibrate_confidence(llm_score: float, keyword_hits: int) -> float:
 # ======================================================
 # MAIN ENDPOINT - FIXED HEADER HANDLING
 # ======================================================
-#
-# @app.post("/api/v1/honeypot/analyze")
-# def analyze_honeypot(
-#     payload: HoneypotRequest,
-#     x_api_key: Optional[str] = Header(None, alias="x-api-key")
-# ):
-#     # Check API key
-#     if x_api_key != API_KEY:
-#         raise HTTPException(status_code=403, detail="Forbidden")
-#
-#     keyword_signals = detect_keywords(payload.message.text)
-#     scam_types = classify_scam_type(keyword_signals["matchedCategories"])
-#     behavioral = compute_behavioral_metrics(payload)
-#     artifacts = extract_artifacts(payload.message.text)
-#
-#     llm_response = client.models.generate_content(
-#         model=MODEL_NAME,
-#         contents=build_llm_prompt(payload.message.text, keyword_signals)
-#     )
-#
-#     try:
-#         # Try to extract JSON from response
-#         response_text = llm_response.text.strip()
-#         # Remove markdown code blocks if present
-#         if response_text.startswith("```"):
-#             response_text = re.sub(r'^```(?:json)?\n?', '', response_text)
-#             response_text = re.sub(r'\n?```$', '', response_text)
-#         llm = json.loads(response_text)
-#     except Exception as e:
-#         # Fallback response if Gemini fails
-#         llm = {
-#             "scamConfidenceScore": 0.85,
-#             "riskLevel": "HIGH",
-#             "intentSignals": ["CREDENTIAL_HARVESTING"],
-#             "honeypotIntelligence": {
-#                 "scammerTactics": ["Generic scam detected"],
-#                 "recommendedResponse": "Remain vigilant"
-#             }
-#         }
-#
-#     final_confidence = calibrate_confidence(
-#         llm_score=llm.get("scamConfidenceScore", 0.85),
-#         keyword_hits=keyword_signals["keywordHitCount"]
-#     )
-#
-#     return {
-#         "sessionId": payload.sessionId,
-#         "overallAssessment": {
-#             "isScam": True,
-#             "scamConfidenceScore": final_confidence,
-#             "riskLevel": llm.get("riskLevel", "HIGH")
-#         },
-#         "scamClassification": {
-#             "primaryType": scam_types["primaryType"],
-#             "secondaryTypes": scam_types["secondaryTypes"],
-#             "impersonatedEntity": "SBI" if "ACCOUNT_THREAT" in keyword_signals["matchedCategories"] else None
-#         },
-#         "behavioralAnalysis": behavioral,
-#         "intentSignals": llm.get("intentSignals", []),
-#         "extractedArtifacts": artifacts,
-#         "channelRiskAssessment": {
-#             "channel": payload.metadata.channel,
-#             "simBindingRisk": "HIGH" if "SIM" in keyword_signals["matchedCategories"] else "MEDIUM",
-#             "otpRelayRisk": "HIGH" if "OTP" in keyword_signals["matchedCategories"] else "MEDIUM"
-#         },
-#         "honeypotIntelligence": llm.get("honeypotIntelligence", {}),
-#         "learningSignalsForFutureDetection": {
-#             "matchedCategories": keyword_signals["matchedCategories"],
-#             "keywordHitCount": keyword_signals["keywordHitCount"],
-#             "regionalTargeting": "INDIA"
-#         }
-#     }
+
+@app.post("/api/v1/honeypot/analyze")
+def analyze_honeypot(
+    payload: HoneypotRequest,
+    x_api_key: Optional[str] = Header(None, alias="x-api-key")
+):
+    # Check API key
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    keyword_signals = detect_keywords(payload.message.text)
+    scam_types = classify_scam_type(keyword_signals["matchedCategories"])
+    behavioral = compute_behavioral_metrics(payload)
+    artifacts = extract_artifacts(payload.message.text)
+
+    llm_response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=build_llm_prompt(payload.message.text, keyword_signals)
+    )
+
+    try:
+        # Try to extract JSON from response
+        response_text = llm_response.text.strip()
+                                                                                                                                                                                # Remove markdown code blocks if present
+        if response_text.startswith("```"):
+            response_text = re.sub(r'^```(?:json)?\n?', '', response_text)
+            response_text = re.sub(r'\n?```$', '', response_text)
+        llm = json.loads(response_text)
+    except Exception as e:
+        # Fallback response if Gemini fails
+        llm = {
+            "scamConfidenceScore": 0.85,
+            "riskLevel": "HIGH",
+            "intentSignals": ["CREDENTIAL_HARVESTING"],
+            "honeypotIntelligence": {
+                "scammerTactics": ["Generic scam detected"],
+                "recommendedResponse": "Remain vigilant"
+            }
+        }
+
+    final_confidence = calibrate_confidence(
+        llm_score=llm.get("scamConfidenceScore", 0.85),
+        keyword_hits=keyword_signals["keywordHitCount"]
+    )
+
+    return {
+        "sessionId": payload.sessionId,
+        "overallAssessment": {
+            "isScam": True,
+            "scamConfidenceScore": final_confidence,
+            "riskLevel": llm.get("riskLevel", "HIGH")
+        },
+        "scamClassification": {
+            "primaryType": scam_types["primaryType"],
+            "secondaryTypes": scam_types["secondaryTypes"],
+            "impersonatedEntity": "SBI" if "ACCOUNT_THREAT" in keyword_signals["matchedCategories"] else None
+        },
+        "behavioralAnalysis": behavioral,
+        "intentSignals": llm.get("intentSignals", []),
+        "extractedArtifacts": artifacts,
+        "channelRiskAssessment": {
+            "channel": payload.metadata.channel,
+            "simBindingRisk": "HIGH" if "SIM" in keyword_signals["matchedCategories"] else "MEDIUM",
+            "otpRelayRisk": "HIGH" if "OTP" in keyword_signals["matchedCategories"] else "MEDIUM"
+        },
+        "honeypotIntelligence": llm.get("honeypotIntelligence", {}),
+        "learningSignalsForFutureDetection": {
+            "matchedCategories": keyword_signals["matchedCategories"],
+            "keywordHitCount": keyword_signals["keywordHitCount"],
+            "regionalTargeting": "INDIA"
+        }
+    }
 
 # ======================================================
 # HEALTH
