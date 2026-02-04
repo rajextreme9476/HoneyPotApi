@@ -2,3 +2,6 @@ fastapi==0.115.5
 uvicorn[standard]==0.32.1
 pydantic==2.10.1
 pydantic-core==2.27.1
+google-genai==0.5.0
+
+protobufgit add . && git commit -m "Fix deps: confirm google-genai SDK and protobuf pin" && git push origin master
