@@ -15,19 +15,19 @@ logger = logging.getLogger(__name__)
 class Config:
     """Application configuration from environment variables"""
     
-    # API Keys
-    API_KEY = os.getenv("API_KEY", "123456789")
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    
+    # API Keys - Read directly from environment
+    API_KEY = os.getenv("API_KEY") or os.environ.get("API_KEY", "123456789")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+
     # Model Configuration
-    MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
-    
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.environ.get("MODEL_NAME", "gemini-2.5-flash")
+
     # Callback URL
-    FINAL_CALLBACK_URL = os.getenv(
+    FINAL_CALLBACK_URL = os.getenv("FINAL_CALLBACK_URL") or os.environ.get(
         "FINAL_CALLBACK_URL",
         "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
     )
-    
+
     # Production Settings
     MAX_CONCURRENT_REQUESTS = int(os.getenv("MAX_CONCURRENT_REQUESTS", "100"))
     REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "25"))
