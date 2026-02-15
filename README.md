@@ -1,5 +1,7 @@
-# 🛡️ Agentic HoneyPot API - AI-Powered Scam Detection System
+# 🛡️ Shield AI
 
+Agentic HoneyPot API - AI-Powered Scam Detection System
+---
 ## 📋 Overview
 
 A production-grade honeypot system that detects scams, extracts intelligence, and engages with scammers using advanced AI. Built for the **National Hackathon Final Round** with full guideline compliance.
@@ -16,6 +18,7 @@ A production-grade honeypot system that detects scams, extracts intelligence, an
 - **🎯 Scam Type Classification**: Automatically identifies fraud types (bank fraud, UPI scams, phishing, lottery scams, etc.)
 - **🔒 Production-Ready**: Circuit breaker, rate limiting, comprehensive error handling
 - **✅ Guideline Compliant**: Exact output format matching evaluation server requirements
+- **🌍 Multi-Language Support**
 
 ---
 
@@ -395,6 +398,47 @@ Sends final report when:
 
 ---
 
+## 🌍 Multi-Language Support
+
+### Supported Languages
+
+- **English** - Full support
+- **Hindi** (हिंदी) - Full support
+- **Hinglish** - Full support (Roman script Hindi)
+
+### Detection Capabilities
+
+**Keyword Detection:**
+- 70+ suspicious keywords in English
+- 25+ suspicious keywords in Hindi (Devanagari)
+- 20+ Hinglish phrases
+
+**Example Scam Messages Detected:**
+
+**Hindi:**
+```
+"तुरंत अपना खाता अपडेट करें। बैंक ब्लॉक हो जाएगा।"
+```
+
+**Hinglish:**
+```
+"Urgent! Aapka account block ho jayega. Turant verify karo."
+```
+
+**Mixed:**
+```
+"Your SBI account suspended. Immediately पैसे transfer करें।"
+```
+
+### Intelligence Extraction (Language-Independent)
+
+All numeric and pattern-based extractions work across languages:
+- UPI IDs: `scammer@paytm` (any language)
+- Bank Accounts: `1234567890123456` (numeric)
+- Phone Numbers: `+919876543210` (numeric)
+- URLs: `http://fake-bank.com` (any language)
+- Keywords: Multi-language detection
+
 ## 🚢 Deployment
 
 ### Deploy to Railway.app
@@ -439,7 +483,7 @@ heroku create your-honeypot-api
 
 # Set environment variables
 heroku config:set GEMINI_API_KEY=your_key
-heroku config:set API_KEY=123456789
+heroku config:set API_KEY=your_key
 
 # Add Procfile
 echo "web: uvicorn src.main:app --host 0.0.0.0 --port \$PORT" > Procfile
@@ -508,8 +552,6 @@ git push heroku main
 
 **Fix:** Run from project root, not from `src/` directory
 ```bash
-# Wrong
-cd src && python main.py
 
 # Correct
 python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
@@ -528,15 +570,7 @@ python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 **Error:** `Arguments must be a tuple, list or a dictionary`
 
-**Fix:** Use ISO string format for timestamps
 ```json
-// ✅ Correct
-"timestamp": "2026-02-15T10:30:00Z"
-
-// ✅ Also works (epoch milliseconds)
-"timestamp": 1770060100000
-```
-
 ### Issue: Callback returns 422
 
 **Error:** `Field required: sessionId, totalMessagesExchanged`
@@ -557,7 +591,6 @@ python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 This is a hackathon submission. For questions or improvements:
 - Open an issue on GitHub
-- Email: your.email@example.com
 
 ---
 
@@ -578,9 +611,9 @@ MIT License - See LICENSE file for details
 
 ## 🙏 Acknowledgments
 
+- **India AI Impact Summit - National Hackathon Organizers** - For the opportunity
 - **Google Gemini AI** - For powerful language understanding
 - **FastAPI** - For excellent async framework
-- **National Hackathon Organizers** - For the opportunity
 - **Open Source Community** - For amazing tools and libraries
 
 ---
@@ -622,5 +655,3 @@ Before submitting to hackathon:
 **📅 Version:** 3.1.0 | Last Updated: February 2026
 
 ---
-
-**Good luck with your hackathon submission! 🚀**
