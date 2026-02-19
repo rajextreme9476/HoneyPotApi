@@ -16,7 +16,7 @@ class Config:
     """Application configuration from environment variables"""
     
     # API Keys - Read directly from environment
-    API_KEY = os.getenv("API_KEY") or os.environ.get("API_KEY", "123456789")
+    API_KEY = os.getenv("API_KEY")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
     # Model Configuration
