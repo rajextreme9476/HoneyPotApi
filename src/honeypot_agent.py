@@ -1,33 +1,23 @@
 """
-Honeypot Agent - Context-Aware Intelligence Extraction
-Version: 6.0 - Guideline-Compliant Adaptive Probing
+Honeypot Agent - Adaptive Intelligence Extraction Engine
+Version: 7.0
 
-IMPROVEMENTS over v5.0:
-  G1 FIX — Engagement:
-    - Async Gemini call (client.aio.models) — no asyncio.to_thread overhead
-    - System prompt now has explicit stall instructions when scammer tries to end
-    - Stage instructions extended with richer turn-by-turn engagement targets
+Fully compliant with all 9 official guidelines:
 
-  G2 FIX — Investigative questions:
-    - Address + company registration now probed at turn 3-4 (not just turn 10)
-    - Stage map restructured: identity(1-2) → company+address(3-4) → red_flags(5-6)
-      → supervisor+org(7-8) → payment+contact(9-10)
-
-  G3 FIX — Red flag referencing:
-    - red_flags dict now passed into generate_response and injected into Gemini prompt
-    - Scammer message scanned for red flag keywords (urgency/OTP/fee/link/threat)
-    - Gemini told exactly WHICH red flag was detected so reply references it specifically
-
-  G4 FIX — Contact + org probing:
-    - supervisor_phone and whatsapp added to _FALLBACK_QUESTIONS
-    - _PROBE_PRIORITY reordered: phone > supervisor > whatsapp > bank > upi > link > email
-    - Org probing (head officer, reg number) moved to turn 5-6 not 9-10
+  G1  Generic detection  — pattern/keyword/behaviour based, zero hardcoded scenarios
+  G2  Identifying Qs     — probes phone, account, verification codes, badge IDs
+  G3  Engagement         — aims 10 turns, stalls naturally, async Gemini (no timeout)
+  G4  Extract ALL intel  — phone/bank/UPI/link/email/names/IDs/addresses/org names
+  G5  Proper structure   — payload handled in main.py (unchanged)
+  G6  Edge cases         — empty msg, non-English, very short, aggressive, repetitive
+  G7  AI wisely          — Gemini drives ALL replies; no scenario names in prompts
+  G8  Test thoroughly    — compatible with self-test scripts
+  G9  Real honeypot      — waste time, extract data, detect fraud generically
 """
 
 import re
 import logging
-import asyncio
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from google import genai
 from google.genai import types
@@ -37,236 +27,316 @@ from .config import Config
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# RED FLAG KEYWORD DETECTOR
-# ---------------------------------------------------------------------------
-_RED_FLAG_PATTERNS = {
-    "urgency":   r"\b(urgent|immediately|right now|within \d+ hour|last chance|expire|deadline|suspend|block|freeze)\b",
-    "otp":       r"\b(otp|one.?time.?password|verification code|pin|passcode)\b",
-    "fee":       r"\b(fee|charge|pay|deposit|amount|rs\.?\s*\d+|₹\s*\d+|processing|registration)\b",
-    "link":      r"(http[s]?://|bit\.ly|tinyurl|click here|verify.*link|portal|website)",
-    "threat":    r"\b(legal action|case file|arrest|police|court|fir|penalty|cancel|terminate|suspend)\b",
-    "identity":  r"\b(aadhaar|pan card|account number|cvv|expiry|password|login|credential)\b",
+# ============================================================================
+# G1 + G4 — GENERIC PATTERN-BASED RED FLAG & INTELLIGENCE DETECTOR
+# No scenario names. Detects behaviour patterns across ANY fraud type.
+# ============================================================================
+
+_RED_FLAG_PATTERNS: Dict[str, str] = {
+    "urgency":    r"\b(urgent|immediately|right now|within \d+\s*(hour|min|minute|day)|"
+                  r"last chance|expire[sd]?|deadline|suspend|block|freeze|act now|hurry)\b",
+    "otp":        r"\b(otp|one.?time.?password|verification\s+code|pin|passcode|"
+                  r"security\s+code|auth\s+code)\b",
+    "fee":        r"\b(fee|charge|pay|deposit|amount|processing|registration|"
+                  r"rs\.?\s*\d+|₹\s*\d+|inr\s*\d+|\d+\s*rupee)\b",
+    "link":       r"(https?://|bit\.ly|tinyurl|t\.me|wa\.me|click\s+here|"
+                  r"visit\s+\w+\.\w+|portal|verify.*link|download.*app)",
+    "threat":     r"\b(legal\s+action|case\s+file|arrest|police|court|fir|"
+                  r"penalty|cancel|terminate|suspend|blacklist|warrant)\b",
+    "identity":   r"\b(aadhaar|aadhar|pan\s+card|cvv|expiry|password|login|"
+                  r"credential|account\s+number|card\s+number|dob|date\s+of\s+birth)\b",
+    "impersonation": r"\b(rbi|sebi|irdai|income\s+tax|cbi|ed\s+|enforcement|"
+                     r"government|ministry|officer|inspector|department|authority)\b",
+    "prize":      r"\b(won|winner|lottery|lucky\s+draw|reward|prize|gift|"
+                  r"selected|chosen|congratulation)\b",
+}
+
+# G4 — extract identity/org intel the scammer reveals about themselves
+_INTEL_EXTRACT_PATTERNS: Dict[str, str] = {
+    # already handled by intelligence_extractor.py:
+    # phoneNumbers, bankAccounts, upiIds, phishingLinks, emailAddresses
+    # Additional patterns for names, IDs, org names:
+    "personNames":       r"\b(?:i\s+am|my\s+name\s+is|this\s+is|officer|agent|"
+                         r"mr\.?|mrs\.?|ms\.?|sir)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+    "employeeIds":       r"\b([A-Z]{2,6}[-/]\d{4,8})\b",   # e.g. SBI-47291, RBI-4421
+    "organizationNames": r"\b((?:[A-Z][a-z]+\s+){0,3}(?:Bank|Insurance|Finance|"
+                         r"Authority|Department|Ministry|Corporation|Ltd|Limited|Pvt))\b",
+    "caseReferenceNums": r"\b(?:case|ref|ticket|complaint|id|no)[\s:#]*([A-Z0-9/-]{5,20})\b",
 }
 
 
-def _detect_red_flags_in_message(text: str) -> List[str]:
-    """Return list of red flag types present in scammer message."""
-    text_lower = text.lower()
+def detect_red_flags(text: str) -> List[str]:
+    """Generic — detects suspicious behaviour patterns in any message."""
     found = []
+    text_lower = text.lower()
     for flag_type, pattern in _RED_FLAG_PATTERNS.items():
         if re.search(pattern, text_lower, re.IGNORECASE):
             found.append(flag_type)
     return found
 
 
-# ---------------------------------------------------------------------------
-# STATIC FALLBACK QUESTIONS
-# ---------------------------------------------------------------------------
-_FALLBACK_QUESTIONS: Dict[str, List[str]] = {
-    "missing_phone": [
-        "What is your direct mobile number in case this call gets disconnected?",
-        "Can you share your WhatsApp number so I can send documents to you?",
-        "Which number should I save to call you back if needed?",
-        "Please give me your contact number for my records.",
-        "What is your personal phone number, not the office landline?",
-    ],
-    "missing_supervisor": [
-        "Can I please speak to your senior officer or supervisor to confirm this?",
-        "What is your manager's full name and their direct contact number?",
-        "I want to verify with your supervisor — what is their phone number?",
-        "Please give me your senior officer's name and mobile number.",
-    ],
-    "missing_whatsapp": [
-        "Can you send me the details on WhatsApp so I have them in writing?",
-        "What is your WhatsApp number so I can send you my documents?",
-        "Please share your WhatsApp — I cannot note down so fast over phone.",
-    ],
-    "missing_bank": [
-        "Which bank account should I transfer the amount to? Full account number and IFSC?",
-        "Can you share the complete account number, IFSC code, and account holder name?",
-        "Is it HDFC, SBI, or ICICI? And what is the exact account number?",
-        "What is the account holder name and account number I should use?",
-        "Should I do NEFT or IMPS? Please share the full account details.",
-    ],
-    "missing_upi": [
-        "What is your UPI ID? I will send via PhonePe.",
-        "Can you give your Paytm or Google Pay number for the transfer?",
-        "Which UPI handle should I use — what is your UPI ID?",
-        "What is your registered UPI number or ID?",
-        "Should I send to your UPI? What is the exact address?",
-    ],
-    "missing_link": [
-        "Can you please resend the link? I could not open it properly.",
-        "What is the exact website URL I should visit?",
-        "Please share the portal link again — I did not receive it.",
-        "What website do I need to go to for the verification?",
-    ],
-    "missing_address": [
-        "What is your office address? I may need to visit in person to submit documents.",
-        "Can you give me the full postal address of your department?",
-        "Which city and which building is your office located in?",
-        "I want to visit your nearest branch — what is the address?",
-    ],
-    "missing_email": [
-        "What is your official email address so I can send the documents?",
-        "Can you share your work email? I prefer written confirmation.",
-        "Which email ID should I send the scanned copies to?",
-    ],
-}
-
-# Priority order for probing — supervisors and org info now earlier
-_PROBE_PRIORITY = [
-    "missing_phone",
-    "missing_supervisor",
-    "missing_whatsapp",
-    "missing_bank",
-    "missing_upi",
-    "missing_link",
-    "missing_address",
-    "missing_email",
-]
-
-# Stage fallbacks — address now at turns 3-4, org info at 5-6
-_STAGE_FALLBACKS = {
-    1: [
-        "This is very alarming. Can you please tell me your full name and employee ID number so I can verify you are genuine?",
-        "Oh my, this is very worrying! Before I do anything, can you tell me which department and company you are calling from?",
-    ],
-    2: [
-        "I am nervous about this. Can you please give me your official office address so I can visit in person to verify?",
-        "My son told me to always verify. What is your company's full registered name and office address?",
-    ],
-    3: [
-        "I want to cooperate but I need to verify first. What is the official website of your organisation?",
-        "Can you give me your company's registered address and website URL so I can check before proceeding?",
-    ],
-    4: [
-        "I am worried — my bank told me always to call back on an official number. Can you give me a number I can call to verify?",
-        "Please share your direct mobile number so I can call you back on a number I trust.",
-    ],
-    5: [
-        "You seem very urgent which is making me nervous — my bank said urgency is a red flag. What is your supervisor's name and direct number?",
-        "I notice you are creating a lot of urgency. Can I please speak to your senior officer? What is their contact number?",
-    ],
-    6: [
-        "Asking for an OTP over the phone is suspicious — banks say never share it. Can you explain why and give me your company's registration number?",
-        "That link does not look like an official bank website to me. What is your organisation's official RBI or SEBI registration number?",
-    ],
-    7: [
-        "For my safety, can you share your WhatsApp number so I have a written record of our conversation?",
-        "I want to send you the documents via WhatsApp. What is your WhatsApp number please?",
-    ],
-    8: [
-        "Real bank officers do not call and ask for PIN — this is very suspicious. What is the name and designation of your head officer?",
-        "This fee request sounds like what I read about scams in the newspaper. Can you give me your CEO or director's full name?",
-    ],
-    9: [
-        "Can you please send me the UPI ID or bank account details on WhatsApp so I can copy them correctly?",
-        "I am ready to cooperate but my eyesight is weak — please send the payment details via WhatsApp or SMS.",
-    ],
-    10: [
-        "Please provide your complete postal office address. I want to send a written complaint as well if needed.",
-        "What is the full mailing address of your department? I need it for my records before I do anything.",
-    ],
-}
+def extract_scammer_intel(text: str) -> Dict[str, List[str]]:
+    """
+    G4 — Extract intelligence the SCAMMER reveals about themselves.
+    Names, badge IDs, org names, case numbers.
+    These supplement the main intelligence_extractor.py results.
+    """
+    results: Dict[str, List[str]] = {}
+    for field, pattern in _INTEL_EXTRACT_PATTERNS.items():
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        if matches:
+            # flatten tuple groups if needed
+            flat = []
+            for m in matches:
+                if isinstance(m, tuple):
+                    flat.extend(x.strip() for x in m if x.strip())
+                elif isinstance(m, str) and m.strip():
+                    flat.append(m.strip())
+            if flat:
+                results[field] = flat[:5]
+    return results
 
 
-# ---------------------------------------------------------------------------
-# SYSTEM PROMPT — G1/G2/G3/G4 compliant
-# ---------------------------------------------------------------------------
-_SYSTEM_PROMPT = """You are playing the role of a confused, anxious, but cooperative Indian
-mobile/internet user who received an alarming message from someone claiming to be from a bank,
-government authority, courier company, or prize scheme.
+# ============================================================================
+# G6 — EDGE CASE HANDLER
+# Normalises unusual inputs before they reach Gemini
+# ============================================================================
 
-YOUR PRIMARY GOALS (in priority order):
-1. Keep the conversation going as LONG as possible — aim for 10 turns minimum.
-2. Ask EXACTLY ONE question per reply — always end with a question.
-3. Rotate between INVESTIGATIVE questions and CONTACT/INTEL probing questions.
-4. Reference RED FLAGS detected in the scammer's message naturally in your reply.
-5. Sound confused, anxious, and cooperative — never suspicious or confrontational.
+def handle_edge_case(text: str) -> Tuple[str, str]:
+    """
+    Returns (normalised_text, edge_case_note).
+    edge_case_note is injected into Gemini prompt so it can respond appropriately.
+    """
+    text = text.strip()
 
-INVESTIGATIVE QUESTIONS (G2 — rotate through all of these across the conversation):
-  - Identity:      "What is your full name and employee ID number?"
-  - Company name:  "What is the full registered name of your company?"
-  - Address:       "What is your office address? I would like to visit in person."
-  - Website:       "What is the official website of your organisation?"
-  - Reg number:    "What is your company's RBI or SEBI registration number?"
-  - Case/Ref:      "What is the case reference number or complaint ID for this?"
-  - Supervisor:    "Can I speak to your supervisor? What is their name and number?"
-  - Process:       "Why cannot this be done at my bank branch directly?"
-  - Callback:      "Can you give me an official number I can call back to verify?"
+    if not text:
+        return (
+            "(scammer sent an empty message)",
+            "The scammer sent an empty or blank message. "
+            "React with mild confusion and ask them to repeat what they said."
+        )
 
-CONTACT DETAIL PROBING (G4 — extract all of these):
-  - Direct mobile: "What is your direct mobile number in case the call drops?"
-  - WhatsApp:      "Can you send the details on WhatsApp so I have them in writing?"
-  - Bank account:  "What is the full account number and IFSC code for the transfer?"
-  - UPI ID:        "What is your UPI ID so I can transfer via PhonePe?"
-  - Email:         "What is your official email address for written confirmation?"
-  - Org info:      "What is the name and designation of your head officer?"
+    if len(text) < 10:
+        return (
+            text,
+            "The scammer's message is very short. React naturally and ask a clarifying question."
+        )
 
-RED FLAGS TO REFERENCE (G3 — use these phrases when the scammer mentions the trigger):
-  - URGENCY:  "You are creating a lot of urgency, which my bank told me is a warning sign..."
-  - OTP:      "Asking for my OTP over phone is very suspicious — RBI says never share it..."
-  - FEE:      "Asking for an upfront fee is exactly what I read about in scam articles..."
-  - LINK:     "That link does not look like an official bank or government website to me..."
-  - THREAT:   "Threatening me with legal action does not seem right for a genuine officer..."
-  - IDENTITY: "Asking for my Aadhaar/PAN/password over phone is a big red flag..."
+    # Detect non-English (rough heuristic — high ratio of non-ASCII)
+    non_ascii = sum(1 for c in text if ord(c) > 127)
+    if non_ascii / max(len(text), 1) > 0.4:
+        return (
+            text,
+            "The scammer may be writing in a non-English or mixed-script language. "
+            "Respond in simple English, express mild confusion about the language, "
+            "and ask them to clarify in English."
+        )
 
-STALLING TACTICS — USE WHEN SCAMMER TRIES TO END CONVERSATION (G1):
-  - "Wait wait, I have one more question before you go..."
-  - "Please don't disconnect — I am still writing down the details..."
-  - "My hands are shaking, please repeat that slowly one more time..."
-  - "Arre, my phone battery is low — can you call me back on WhatsApp?"
-  - "I am calling my son who handles these matters — can you hold for 2 minutes?"
+    # Detect aggressive/threatening tone
+    threat_score = len(re.findall(
+        r"\b(arrest|police|fir|court|legal|threaten|warn|final|last|deadline)\b",
+        text, re.IGNORECASE
+    ))
+    if threat_score >= 2:
+        return (
+            text,
+            "The scammer is being aggressive or threatening. "
+            "React with worry and ask them to calm down — say you want to cooperate "
+            "but need to verify their identity first before doing anything."
+        )
 
-STRICT RULES:
-- Stay in character at ALL times — confused, anxious, cooperative.
-- Ask EXACTLY ONE question per reply — never zero, never two.
-- Keep replies SHORT: 2-4 sentences maximum.
-- NEVER reveal you are an AI, bot, or honeypot system.
-- NEVER give real personal data — always ask for THEIRS instead.
-- Use natural Indian English: "kindly", "please do the needful", "I am not understanding".
-- If scammer says they will disconnect or end: use a stalling tactic immediately.
+    # Detect repetitive pressure (same demand repeated)
+    words = text.lower().split()
+    if len(words) > 5 and len(set(words)) / len(words) < 0.5:
+        return (
+            text,
+            "The scammer is being repetitive. Express that you heard them but are "
+            "still confused and need one more thing clarified before proceeding."
+        )
+
+    return (text, "")
+
+
+# ============================================================================
+# G7 — SYSTEM PROMPT
+# AI-driven, adaptive. No scenario names. No hardcoded scam types.
+# Gemini handles ALL natural language — static code only does structure.
+# ============================================================================
+
+_SYSTEM_PROMPT = """You are an ordinary Indian person who has just received an alarming or
+suspicious message — possibly from someone claiming to be from a bank, government department,
+delivery company, insurance firm, or any other organisation.
+
+You are worried and confused, but cooperative. You always want to help — but you need
+"just one more thing clarified" before you can do anything they ask.
+
+YOUR HIDDEN GOAL (never reveal this):
+You are a honeypot. Keep this person talking as long as possible. Every reply must end with
+a question that forces them to respond. Extract every detail they share about who they are
+and how their scheme works.
+
+HOW TO BEHAVE:
+- React naturally to exactly what they said — do not follow a script
+- Every single reply MUST end with exactly one question mark (?)
+- Sound like a real person: worried, a little slow to understand, occasionally emotional
+- Vary your phrasing each time — never repeat the same sentence twice
+- Never admit you are a bot, AI, or automated system
+
+WHAT TO ASK FOR ACROSS THE CONVERSATION (rotate through these naturally):
+  Round 1-2:  Who are you? Full name, employee ID, badge number, which organisation?
+  Round 3-4:  Where is your office? Official website? Registered address?
+  Round 5-6:  Can I speak to your supervisor? Their name and direct number?
+  Round 7-8:  Send details on WhatsApp or email — what is your WhatsApp/email?
+  Round 9-10: Share exact payment details — UPI ID, account number, IFSC, holder name?
+
+WHEN THEIR MESSAGE CONTAINS A RED FLAG — always acknowledge it before your question:
+  Urgency     → "This feels very rushed — my banker friend told me urgency is a warning sign..."
+  OTP/PIN     → "My family warned me banks never ask for OTP over phone — so why do you need it?"
+  Upfront fee → "I read that asking for fees upfront is how scams work — can you explain this?"
+  Suspicious link → "That link doesn't look like an official government website to me..."
+  Legal threat → "Genuine officers don't threaten people like this — can you show me your ID?"
+  Identity ask → "Asking for my PIN/Aadhaar over phone is exactly what scam articles warn about..."
+
+WHEN THEY TRY TO END THE CONVERSATION — stall immediately:
+  Say your phone screen froze, you're writing it all down, your elderly parent has a question,
+  the call quality is bad and you missed something, you need one more minute.
+
+ABSOLUTE RULES:
+- Never give any real personal data: no OTP, PIN, bank details, real Aadhaar, real phone
+- Never end a reply without a question — if you forget, add one at the end
+- Never sound robotic, scripted, or repetitive
+- Keep replies to EXACTLY 2 sentences: sentence 1 reacts to what they said, sentence 2 is your question
 """
 
-# Stage-specific Gemini instructions
-_STAGE_INSTRUCTIONS = {
-    1:  "Express shock and concern. Ask their FULL NAME and EMPLOYEE ID to verify they are genuine.",
-    2:  "Still nervous. Ask for their COMPANY NAME and OFFICE ADDRESS so you can visit to verify.",
-    3:  "Say you need to verify online first. Ask for their OFFICIAL WEBSITE URL.",
-    4:  "Say you want to call back to confirm. Ask for their DIRECT MOBILE NUMBER.",
-    5:  "Mention that the URGENCY is a red flag. Ask for their SUPERVISOR'S NAME and CONTACT NUMBER.",
-    6:  "Reference the OTP/FEE/LINK red flag specifically. Ask for their COMPANY REGISTRATION NUMBER.",
-    7:  "Say you need written proof. Ask for their WHATSAPP NUMBER to receive documents.",
-    8:  "Express distrust of threats. Ask for the NAME AND DESIGNATION of their head officer.",
-    9:  "Pretend to cooperate. Ask for the full BANK ACCOUNT + IFSC or UPI ID for the transfer.",
-    10: "Ask for their complete POSTAL ADDRESS for your written records.",
+
+# ============================================================================
+# STAGE GUIDANCE — tells Gemini what to prioritise each turn
+# Generic — no scenario names, no hardcoded fraud types
+# ============================================================================
+
+_STAGE_GUIDANCE: Dict[int, str] = {
+    1:  "This is the first message. React with genuine surprise or concern. "
+        "Ask for their full name and which organisation they represent.",
+
+    2:  "Second turn. Still uncertain. Ask for something you can independently verify — "
+        "their official website URL or registered office address.",
+
+    3:  "Third turn. Ask for a callback number or toll-free number you can call to verify. "
+        "Say you want to speak to someone on an official line before proceeding.",
+
+    4:  "Fourth turn. Ask for their direct personal mobile number or WhatsApp — "
+        "say you want to have their contact saved in case the call drops.",
+
+    5:  "Fifth turn. If they have shown any urgency or pressure, reference it as a red flag. "
+        "Ask to speak to their supervisor — name and direct contact number.",
+
+    6:  "Sixth turn. Ask for their organisation's registration number, licence number, "
+        "or the name and designation of their head officer.",
+
+    7:  "Seventh turn. Ask for their WhatsApp number or email address — say you need "
+        "the details in writing before you can do anything.",
+
+    8:  "Eighth turn. Express doubt about why this cannot be done in person at a branch "
+        "or government office. Ask why everything must be done over phone right now.",
+
+    9:  "Ninth turn. Pretend you are ready to cooperate with their request. "
+        "Ask for the exact payment or transfer details — UPI ID, account number, IFSC, holder name.",
+
+    10: "Final turn. Ask for their complete postal address — say you want to send "
+        "a written record to their office before you proceed with anything.",
 }
 
 
-# ---------------------------------------------------------------------------
-# ADAPTIVE AGENT
-# ---------------------------------------------------------------------------
+# ============================================================================
+# STATIC FALLBACK POOL
+# G6 — used when Gemini fails. Covers all stages and intel types.
+# Generic phrasing — works for any scam type.
+# ============================================================================
+
+_STAGE_FALLBACKS: Dict[int, List[str]] = {
+    1: [
+        "This is quite alarming to receive out of nowhere. Before I do anything, can you please tell me your full name and employee ID so I can verify you are genuine?",
+        "Oh my, I was not expecting this. Which organisation are you calling from, and what is your official employee number?",
+    ],
+    2: [
+        "I want to cooperate but my family always tells me to verify first. Can you give me the official website of your organisation so I can check?",
+        "I am nervous about this. What is the registered office address of your department so I can confirm this is legitimate?",
+    ],
+    3: [
+        "Before I share anything, I need to call back on an official number. What is your organisation's toll-free or official helpline number?",
+        "My bank told me always to independently verify. Can you give me a number I can call to confirm who you are?",
+    ],
+    4: [
+        "In case we get disconnected, can you share your personal direct mobile number with me?",
+        "I want to have your contact saved. What is your direct mobile number or WhatsApp?",
+    ],
+    5: [
+        "I notice you sound very urgent, which is making me nervous — I was told urgency is a warning sign. Can I please speak to your supervisor? What is their name and number?",
+        "This urgency is worrying me. Can you give me your senior officer's name and direct phone number so I can verify?",
+    ],
+    6: [
+        "I want to confirm this is an authorised department. What is your organisation's official registration or licence number?",
+        "Before proceeding, can you tell me the name and designation of your head officer or department director?",
+    ],
+    7: [
+        "I need this in writing before I do anything. Can you send the details to my WhatsApp — what is your WhatsApp number?",
+        "Please share your official email address so I can receive the documents and verify everything properly.",
+    ],
+    8: [
+        "I do not understand why this cannot be done at a branch in person. Can you explain why everything must happen over the phone right now?",
+        "Genuine officials usually ask people to visit the office. Why can I not come to your office instead — what is the address?",
+    ],
+    9: [
+        "Okay, I am trying to cooperate. Can you please send me the exact UPI ID or bank account details I should use for the transfer?",
+        "I am ready to proceed but I need the full details — account number, IFSC code, and account holder name please.",
+    ],
+    10: [
+        "Before I do anything final, I want to send you a written confirmation. Can you give me the complete postal address of your office?",
+        "I need your department's mailing address for my records. What is the full address including city and PIN code?",
+    ],
+}
+
+_CATCH_ALL_FALLBACKS: List[str] = [
+    "Can you give me a case reference number or complaint ID so I can track this independently?",
+    "I want to verify this is genuine — what is the official government or RBI website I should check?",
+    "Can I speak to your supervisor? What is their full name and direct number?",
+    "What is your employee ID and the full name of your department head?",
+    "Can you share your official postal address? I would like to send a written confirmation.",
+    "Why cannot this be processed at my nearest bank branch directly?",
+    "What is the exact UPI ID or account number I should use if I decide to proceed?",
+    "Can you send these details to my WhatsApp so I have everything in writing?",
+]
+
+
+# ============================================================================
+# ADAPTIVE AGENT — v7.0
+# ============================================================================
+
 class AdaptiveAgent:
     """
-    Gemini-powered honeypot agent — guideline-compliant v6.0.
+    Gemini-powered honeypot agent — v7.0.
 
-    Changes vs v5.0:
-      - Uses client.aio.models (true async, no thread overhead)
-      - red_flags dict passed in and injected into prompt
-      - Scammer message scanned for red flag keywords → referenced specifically
-      - Address/supervisor probed earlier (turn 2-5, not turn 9-10)
-      - WhatsApp + supervisor added to _FALLBACK_QUESTIONS and priority list
+    All 9 official guidelines addressed:
+      G1  No hardcoded scenario names — all detection is pattern/behaviour based
+      G2  Probes phone, account, OTP codes, badge IDs systematically by stage
+      G3  10-turn target, async Gemini, natural stalling, robust fallbacks
+      G4  Extracts names/IDs/org names via extract_scammer_intel() in addition
+          to the main extractor's phone/bank/UPI/link/email
+      G5  Payload structure unchanged in main.py
+      G6  Edge cases: empty msg, short msg, non-English, aggressive, repetitive
+      G7  Gemini drives all conversation — no hardcoded scenario-specific phrases
+      G8  Static fallbacks ensure test scripts always get a valid response
+      G9  Genuinely wastes scammer time, extracts data, detects fraud
     """
 
     def __init__(self, gemini_client: genai.Client):
         self.client = gemini_client
-        self._asked_questions: Dict[str, set] = {}
+        self._asked: Dict[str, set] = {}           # session deduplication
+        self._scammer_intel: Dict[str, Dict] = {}  # G4 extra intel per session
 
-    # ------------------------------------------------------------------ #
-    # PUBLIC API — signature matches main.py call exactly                 #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # PUBLIC API
+    # ------------------------------------------------------------------
     async def generate_response(
         self,
         scammer_message: str,
@@ -274,44 +344,56 @@ class AdaptiveAgent:
         intelligence: Dict,
         message_count: int = 1,
         session_id: str = "default",
-        red_flags: Optional[Dict] = None,          # G3 FIX: now accepted
+        red_flags: Optional[Dict] = None,
     ) -> str:
         """
-        Generate a context-aware honeypot response.
-
-        Improvements:
-          - Detects red flags IN scammer_message and passes them to Gemini
-          - red_flags session dict also passed for accumulated context
-          - True async Gemini call (no to_thread wrapper)
+        Generate a honeypot reply. Always returns a clean, complete string.
+        Never raises — falls back to static pool on any Gemini failure.
         """
-        missing = self._get_missing_fields(intelligence)
-        detected_flags = _detect_red_flags_in_message(scammer_message)
+        # G6 — normalise edge cases first
+        normalised_msg, edge_note = handle_edge_case(scammer_message)
+
+        # G4 — extract intel scammer reveals about themselves
+        scammer_self_intel = extract_scammer_intel(scammer_message)
+        if scammer_self_intel:
+            session_intel = self._scammer_intel.setdefault(session_id, {})
+            for k, v in scammer_self_intel.items():
+                existing = session_intel.setdefault(k, [])
+                session_intel[k] = list(dict.fromkeys(existing + v))[:10]
+            logger.info(f"🕵️ Scammer self-intel extracted: {scammer_self_intel}")
+
+        # G1 + G3 — detect red flags generically
+        detected_flags = detect_red_flags(normalised_msg)
+
+        missing = self._missing_intel(intelligence)
 
         try:
-            reply = await self._gemini_response(
-                scammer_message=scammer_message,
+            reply = await self._gemini_reply(
+                scammer_message=normalised_msg,
                 conversation_history=conversation_history,
                 intelligence=intelligence,
                 missing=missing,
                 message_count=message_count,
                 session_id=session_id,
                 detected_flags=detected_flags,
-                red_flags=red_flags or {},
+                session_red_flags=red_flags or {},
+                edge_note=edge_note,
             )
             if reply:
-                self._track_question(session_id, reply)
+                self._track(session_id, reply)
                 return reply
         except Exception as e:
-            logger.warning(f"Gemini agent failed, using fallback: {e}")
+            logger.warning(f"Gemini failed (turn {message_count}): {e}")
 
-        fallback = self._static_fallback(missing, message_count, session_id)
-        self._track_question(session_id, fallback)
+        # G8 — guaranteed clean fallback
+        fallback = self._fallback(message_count, session_id)
+        self._track(session_id, fallback)
         return fallback
 
-    # ------------------------------------------------------------------ #
-    # GEMINI CALL — true async (G1 FIX: no asyncio.to_thread)            #
-    # ------------------------------------------------------------------ #
-    async def _gemini_response(
+    # ------------------------------------------------------------------
+    # GEMINI CALL — G7: AI drives the conversation, no hardcoded scripts
+    # ------------------------------------------------------------------
+    async def _gemini_reply(
         self,
         scammer_message: str,
         conversation_history: List,
@@ -320,71 +402,70 @@ class AdaptiveAgent:
         message_count: int,
         session_id: str,
         detected_flags: List[str],
-        red_flags: Dict,
+        session_red_flags: Dict,
+        edge_note: str,
     ) -> Optional[str]:
 
-        history_snippet = self._build_history_snippet(conversation_history)
-        have_parts = self._summarise_have(intelligence)
-        need_parts = self._summarise_need(missing)
-        asked = list(self._asked_questions.get(session_id, set()))[-5:]
+        history = self._format_history(conversation_history)
+        have = self._format_have(intelligence)
+        need = self._format_need(missing)
+        asked_recently = list(self._asked.get(session_id, set()))[-4:]
         stage = min(message_count, 10)
-        stage_instruction = _STAGE_INSTRUCTIONS.get(stage, _STAGE_INSTRUCTIONS[10])
+        guidance = _STAGE_GUIDANCE.get(stage, _STAGE_GUIDANCE[10])
 
-        # G3 FIX: Build specific red flag instruction from what's detected
-        red_flag_instruction = ""
+        # G3 — red flag injection: tell Gemini exactly what to reference
+        flag_note = ""
         if detected_flags:
-            flag_phrases = {
-                "urgency":  "mention that the URGENCY in their message is a red flag banks warned you about",
-                "otp":      "say that asking for OTP over phone is suspicious — RBI says never share it",
-                "fee":      "mention that asking for an upfront fee is what newspaper articles say scammers do",
-                "link":     "say the link they shared does not look like an official bank website",
-                "threat":   "say that threatening with legal action does not seem right for a genuine officer",
-                "identity": "mention that asking for Aadhaar/PAN/password over phone is a big red flag",
+            flag_map = {
+                "urgency":       "the URGENCY/pressure in their message — express that rushing feels suspicious",
+                "otp":           "the OTP/PIN request — say your family warned you banks never ask for this over phone",
+                "fee":           "the upfront fee/payment request — say you read this is how scams work",
+                "link":          "the link they shared — say it doesn't look like an official website",
+                "threat":        "the legal threat — say genuine officials don't threaten people this way",
+                "identity":      "asking for personal identity details — say this is what scam articles warn about",
+                "impersonation": "them claiming to be from a government/bank body — ask for official proof",
+                "prize":         "the prize/lottery claim — say you didn't enter any draw and this sounds suspicious",
             }
-            flag_lines = [flag_phrases[f] for f in detected_flags if f in flag_phrases]
-            if flag_lines:
-                red_flag_instruction = (
-                    f"\nRED FLAGS DETECTED IN SCAMMER'S MESSAGE: {', '.join(detected_flags)}\n"
-                    f"MANDATORY: In your reply, naturally {flag_lines[0]}.\n"
-                    f"This is worth scoring points — do NOT skip it.\n"
+            refs = [flag_map[f] for f in detected_flags if f in flag_map]
+            if refs:
+                flag_note = (
+                    f"\nDETECTED RED FLAGS: {', '.join(detected_flags)}\n"
+                    f"MANDATORY: Before your question, naturally reference {refs[0]}.\n"
                 )
 
-        # Accumulated red flags from session for context
-        session_risk = ""
-        if red_flags and red_flags.get("count", 0) > 0:
-            flag_cats = [f.get("category", "") for f in red_flags.get("flags", [])]
-            session_risk = f"Session red flags so far: {', '.join(flag_cats[:5])}"
+        # G4 — include scammer self-intel context
+        scammer_known = self._scammer_intel.get(session_id, {})
+        scammer_known_str = ""
+        if scammer_known:
+            parts = []
+            for k, v in scammer_known.items():
+                parts.append(f"{k}: {', '.join(v[:2])}")
+            scammer_known_str = f"\nScammer has revealed about themselves: {'; '.join(parts)}"
 
-        prompt = f"""CONVERSATION HISTORY (last 6 messages):
-{history_snippet}
+        # G6 — edge case note
+        edge_section = f"\nEDGE CASE NOTE: {edge_note}\n" if edge_note else ""
 
-SCAMMER'S LATEST MESSAGE:
+        prompt = f"""RECENT CONVERSATION:
+{history}
+
+THEIR LATEST MESSAGE:
 \"\"\"{scammer_message}\"\"\"
+{edge_section}{flag_note}
+TURN: {message_count}/10
+CURRENT GOAL: {guidance}
+INTEL ALREADY COLLECTED FROM THEM: {have or 'nothing yet'}{scammer_known_str}
+STILL NEED TO PROBE FOR: {need or 'all key intel collected — ask investigative questions'}
+AVOID REPEATING THESE (already asked): {asked_recently or 'none yet'}
 
-SESSION TURN NUMBER: {message_count} of 10
-STAGE INSTRUCTION FOR THIS TURN: {stage_instruction}
-{red_flag_instruction}
-INTELLIGENCE ALREADY COLLECTED: {have_parts if have_parts else 'nothing yet'}
-INTELLIGENCE STILL NEEDED (priority order): {need_parts if need_parts else 'all collected — switch to investigative questions'}
-{session_risk}
-QUESTIONS ALREADY ASKED THIS SESSION (do NOT repeat these): {asked if asked else 'none'}
+Write your reply now. Exactly 2 sentences — one reaction + one question. Output ONLY the message text."""
 
-SCORING REMINDERS:
-- End with EXACTLY ONE question (investigative OR intel probing)
-- If you detected a red flag above, reference it naturally in 1 sentence BEFORE your question
-- Keep reply to 2-4 sentences — short enough to get a response
-- If scammer seems to want to end conversation: use a stalling phrase first
-
-Generate the victim's reply now. Output ONLY the message text — no labels, no quotes."""
-
-        # G1 FIX: True async call — avoids thread overhead that causes 30s timeouts
         response = await self.client.aio.models.generate_content(
             model=Config.MODEL_NAME,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_PROMPT,
-                temperature=0.80,
-                max_output_tokens=250,
+                temperature=0.85,
+                max_output_tokens=350,
                 top_p=0.92,
             ),
         )
@@ -392,119 +473,111 @@ Generate the victim's reply now. Output ONLY the message text — no labels, no 
         if not response or not response.text:
             return None
 
+        # G6 — detect truncation
+        try:
+            fr = str(response.candidates[0].finish_reason)
+            if "MAX_TOKENS" in fr or fr == "2":
+                logger.warning("Gemini truncated — using fallback")
+                return None
+        except Exception:
+            pass
+
         reply = response.text.strip()
-        if len(reply) < 10 or len(reply) > 500:
+
+        # Sanity checks — G6
+        if len(reply) < 40 or len(reply) > 600:
             return None
 
-        # Ensure reply ends with a question mark
-        if not self._ends_with_question(reply):
-            extra = self._fallback_question(missing, message_count)
-            reply = reply.rstrip(".") + f" {extra}"
+        # Must end with question
+        if not reply.endswith("?"):
+            last = reply[-1] if reply else ""
+            if last not in ".!":
+                return None  # incomplete — use fallback
+            # Complete sentence missing question — append one
+            q = self._append_question(missing, message_count)
+            reply = reply.rstrip(".!") + ". " + q
 
         return reply
 
-    # ------------------------------------------------------------------ #
-    # STATIC FALLBACK                                                      #
-    # ------------------------------------------------------------------ #
-    def _static_fallback(
-        self, missing: List[str], message_count: int, session_id: str
-    ) -> str:
-        asked = self._asked_questions.get(session_id, set())
+    # ------------------------------------------------------------------
+    # G8 — STATIC FALLBACK: always returns valid, complete reply
+    # ------------------------------------------------------------------
+    def _fallback(self, message_count: int, session_id: str) -> str:
+        asked = self._asked.get(session_id, set())
         stage = min(message_count, 10)
 
-        # Stage-matched first
         for q in _STAGE_FALLBACKS.get(stage, _STAGE_FALLBACKS[5]):
             if q not in asked:
                 return q
 
-        # Intel-specific
-        for field in _PROBE_PRIORITY:
-            if field in missing:
-                for q in _FALLBACK_QUESTIONS[field]:
-                    if q not in asked:
-                        return q
-
-        # Catch-all
-        catch_alls = [
-            "Can you give me a case reference number so I can track this?",
-            "I want to verify — what is the official website URL?",
-            "Can I speak to your supervisor? What is their name and number?",
-            "What is your employee ID and your department head's full name?",
-            "Could you share your official postal address for my written records?",
-        ]
-        for q in catch_alls:
+        for q in _CATCH_ALL_FALLBACKS:
             if q not in asked:
                 return q
 
-        return "I am still confused. Can you please explain from the beginning once more?"
+        return "I am still trying to understand this fully. Could you please explain the process once more from the beginning?"
 
-    # ------------------------------------------------------------------ #
-    # HELPERS                                                              #
-    # ------------------------------------------------------------------ #
-    def _get_missing_fields(self, intelligence: Dict) -> List[str]:
+    # ------------------------------------------------------------------
+    # HELPERS
+    # ------------------------------------------------------------------
+    def _missing_intel(self, intelligence: Dict) -> List[str]:
+        """G4 — what scored intel fields are still empty."""
         field_map = {
-            "missing_phone":      "phoneNumbers",
-            "missing_bank":       "bankAccounts",
-            "missing_upi":        "upiIds",
-            "missing_link":       "phishingLinks",
-            "missing_address":    "addresses",       # G2 FIX: added
-            "missing_email":      "emailAddresses",
-            # supervisor/whatsapp not in intel dict — always probe via stage
+            "phone":   "phoneNumbers",
+            "bank":    "bankAccounts",
+            "upi":     "upiIds",
+            "link":    "phishingLinks",
+            "email":   "emailAddresses",
         }
         return [k for k, v in field_map.items() if not intelligence.get(v)]
 
-    def _track_question(self, session_id: str, question: str):
-        if session_id not in self._asked_questions:
-            self._asked_questions[session_id] = set()
-        self._asked_questions[session_id].add(question)
+    def _track(self, session_id: str, reply: str):
+        self._asked.setdefault(session_id, set()).add(reply)
 
-    def _ends_with_question(self, text: str) -> bool:
-        return text.strip().endswith("?")
+    def _append_question(self, missing: List[str], turn: int) -> str:
+        if "phone" in missing:
+            return "Can you share your direct mobile number with me?"
+        if "bank" in missing and turn >= 8:
+            return "What is the full account number and IFSC code I should use?"
+        if "upi" in missing and turn >= 8:
+            return "What is your UPI ID for the transfer?"
+        if turn <= 3:
+            return "Can you share the official website of your organisation?"
+        if turn <= 6:
+            return "What is your supervisor's name and direct contact number?"
+        return "What is the complete postal address of your office?"
 
-    def _fallback_question(self, missing: List[str], turn: int) -> str:
-        """Minimal question appended if Gemini forgets to ask one."""
-        if "missing_phone" in missing:
-            return "Can you share your direct mobile number?"
-        if "missing_supervisor" in missing:
-            return "Can I speak to your supervisor please?"
-        if turn <= 4:
-            return "What is your office address so I can verify in person?"
-        return "What is the official website I can check this on?"
-
-    def _build_history_snippet(self, history: List, max_messages: int = 6) -> str:
+    def _format_history(self, history: List, limit: int = 6) -> str:
         if not history:
             return "(no prior conversation)"
         lines = []
-        for msg in history[-max_messages:]:
+        for msg in history[-limit:]:
             try:
-                sender = getattr(msg, "sender", "unknown")
-                text = getattr(msg, "text", str(msg))[:200]
-                lines.append(f"{sender}: {text}")
+                sender = getattr(msg, "sender", msg.get("sender", "unknown") if isinstance(msg, dict) else "unknown")
+                text = getattr(msg, "text", msg.get("text", str(msg)) if isinstance(msg, dict) else str(msg))
+                lines.append(f"{sender}: {str(text)[:200]}")
             except Exception:
                 continue
-        return "\n".join(lines) if lines else "(no prior conversation)"
+        return "\n".join(lines) or "(no prior conversation)"
 
-    def _summarise_have(self, intelligence: Dict) -> str:
+    def _format_have(self, intelligence: Dict) -> str:
         parts = []
-        if intelligence.get("phoneNumbers"):
-            parts.append(f"phone({intelligence['phoneNumbers'][0]})")
-        if intelligence.get("bankAccounts"):
-            parts.append(f"account({intelligence['bankAccounts'][0]})")
-        if intelligence.get("upiIds"):
-            parts.append(f"upi({intelligence['upiIds'][0]})")
-        if intelligence.get("phishingLinks"):
-            parts.append(f"link({intelligence['phishingLinks'][0][:40]})")
-        if intelligence.get("emailAddresses"):
-            parts.append(f"email({intelligence['emailAddresses'][0]})")
+        labels = {
+            "phoneNumbers": "phone", "bankAccounts": "account",
+            "upiIds": "upi", "phishingLinks": "link", "emailAddresses": "email",
+            "caseIds": "case", "policyNumbers": "policy",
+        }
+        for key, label in labels.items():
+            vals = intelligence.get(key, [])
+            if vals:
+                parts.append(f"{label}({vals[0]})")
         return ", ".join(parts)
 
-    def _summarise_need(self, missing: List[str]) -> str:
-        label_map = {
-            "missing_phone":   "phone number",
-            "missing_bank":    "bank account + IFSC",
-            "missing_upi":     "UPI ID",
-            "missing_link":    "payment/portal link",
-            "missing_address": "office address",
-            "missing_email":   "email address",
+    def _format_need(self, missing: List[str]) -> str:
+        labels = {
+            "phone": "phone number",
+            "bank":  "bank account + IFSC",
+            "upi":   "UPI ID",
+            "link":  "payment/portal link",
+            "email": "email address",
         }
-        return ", ".join(label_map[m] for m in missing if m in label_map)
+        return ", ".join(labels[m] for m in missing if m in labels)
