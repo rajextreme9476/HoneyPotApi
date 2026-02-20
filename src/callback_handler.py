@@ -70,28 +70,36 @@ def _build_callback_payload(session_id: str, session_data: Dict) -> Dict:
 
         # Build COMPLETE payload
         payload = {
-            # REQUIRED FIELDS (15 points)
+            # REQUIRED FIELDS
             "sessionId": session_id,
             "scamDetected": session_data.get("scam_detected", False),
             "totalMessagesExchanged": message_count,
 
-            # INTELLIGENCE (40 points potential)
+            # REQUIRED: extractedIntelligence — ALL 8 field types (GAP 4-7 FIX)
             "extractedIntelligence": {
-                "phoneNumbers": intelligence.get("phoneNumbers", []),      # 10 pts
-                "bankAccounts": intelligence.get("bankAccounts", []),      # 10 pts
-                "upiIds": intelligence.get("upiIds", []),                  # 10 pts
-                "phishingLinks": intelligence.get("phishingLinks", []),    # 10 pts
-                "suspiciousKeywords": intelligence.get("suspiciousKeywords", [])
+                "phoneNumbers":       intelligence.get("phoneNumbers", []),
+                "bankAccounts":       intelligence.get("bankAccounts", []),
+                "upiIds":             intelligence.get("upiIds", []),
+                "phishingLinks":      intelligence.get("phishingLinks", []),
+                "emailAddresses":     intelligence.get("emailAddresses", []),   # GAP 4
+                "caseIds":            intelligence.get("caseIds", []),           # GAP 5
+                "policyNumbers":      intelligence.get("policyNumbers", []),     # GAP 6
+                "orderNumbers":       intelligence.get("orderNumbers", []),      # GAP 7
+                "suspiciousKeywords": intelligence.get("suspiciousKeywords", []),
             },
 
-            # OPTIONAL FIELDS (+2.5 points)
+            # OPTIONAL: GAP 10 FIX — engagementDurationSeconds at TOP LEVEL
+            # Guidelines example shows it here AND inside engagementMetrics
+            "engagementDurationSeconds": duration,
             "engagementMetrics": {
                 "totalMessagesExchanged": message_count,
-                "engagementDurationSeconds": duration
+                "engagementDurationSeconds": duration,
             },
 
-            # AGENT NOTES (+2.5 points)
-            "agentNotes": _build_agent_notes(session_data, duration)
+            # OPTIONAL scoring fields
+            "agentNotes": _build_agent_notes(session_data, duration),           # 1 pt
+            "scamType": session_data.get("scam_type", "scam_detected"),         # 1 pt GAP 8
+            "confidenceLevel": round(session_data.get("confidence_score", 0.0), 4),  # 1 pt GAP 9
         }
 
         return payload
@@ -99,23 +107,21 @@ def _build_callback_payload(session_id: str, session_data: Dict) -> Dict:
     except Exception as e:
         logger.error(f"Error building callback payload: {e}", exc_info=True)
 
-        # Fallback with minimal required fields
+        # Fallback with ALL required + optional fields
         return {
             "sessionId": session_id,
             "scamDetected": True,
             "totalMessagesExchanged": 0,
             "extractedIntelligence": {
-                "phoneNumbers": [],
-                "bankAccounts": [],
-                "upiIds": [],
-                "phishingLinks": [],
-                "suspiciousKeywords": []
+                "phoneNumbers": [], "bankAccounts": [], "upiIds": [],
+                "phishingLinks": [], "emailAddresses": [], "caseIds": [],
+                "policyNumbers": [], "orderNumbers": [], "suspiciousKeywords": [],
             },
-            "engagementMetrics": {
-                "totalMessagesExchanged": 0,
-                "engagementDurationSeconds": 0
-            },
-            "agentNotes": "Scam detected - minimal data available."
+            "engagementDurationSeconds": 0,
+            "engagementMetrics": {"totalMessagesExchanged": 0, "engagementDurationSeconds": 0},
+            "agentNotes": "Scam detected - minimal data available.",
+            "scamType": "scam_detected",
+            "confidenceLevel": 0.0,
         }
 
 

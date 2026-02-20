@@ -48,8 +48,13 @@ class SessionManager:
                             "upiIds": [],
                             "phishingLinks": [],
                             "emailAddresses": [],
-                            "suspiciousKeywords": []  # ✅ ADDED
+                            "suspiciousKeywords": [],
+                            # GAP 17 FIX: new field types evaluator may plant fake data in
+                            "caseIds": [],
+                            "policyNumbers": [],
+                            "orderNumbers": [],
                         },
+                        "red_flags": {},  # accumulated across messages
                         "callback_sent": False,
                         "created_at": datetime.now(),
                         "last_activity": datetime.now(),
@@ -77,8 +82,12 @@ class SessionManager:
                     "upiIds": [],
                     "phishingLinks": [],
                     "emailAddresses": [],
-                    "suspiciousKeywords": []  # ✅ ADDED
+                    "suspiciousKeywords": [],
+                    "caseIds": [],
+                    "policyNumbers": [],
+                    "orderNumbers": [],
                 },
+                "red_flags": {},
                 "callback_sent": False,
                 "scam_type": None,
                 "start_time": time.time()
